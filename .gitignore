@@ -1,0 +1,5 @@
+.env
+output/**/*.png
+output/**/*.jpg
+output/**/*.txt
+.env
