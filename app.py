@@ -22,7 +22,7 @@ from bs4 import BeautifulSoup
 # OpenAI
 import openai
 
-# Lambda Env Parameters
+# .env Parameters
 OUTPUT_PATH = os.environ['OUTPUT_PATH']
 WEB_HOOK_URL = os.environ['WEB_HOOK_URL']
 OPENAI_API_KEY = os.environ['OPENAI_API_KEY']
@@ -42,47 +42,68 @@ session.mount('https://', SSLAdapter())
 
 class Info_news_slack:
     """
-    自治体サイト更新通知アプリSlack
+    Slack
     """
 
     def __init__(self):
         """note"""
         self.webhook = WebhookClient(WEB_HOOK_URL)
-        self.update_status = []
+        self.update_list = []
 
     def update_status(self, text):
         """note"""
-        self.update_status.append(text)
+        self.update_list.append(text)
 
     def send(self, now_str):
         """note"""
-        # update_statusからmd形式のテキスト
+        # md形式のテキスト
         text = ""
 
         # 基本情報
-        text += f"[{now_str}][更新情報]\n"
+        text += f"[{now_str}][更新状況]\n"
+        max_length = 1000  # Slack messageの最大文字数4000までに
 
         # 更新状況
-        if len(self.update_status) > 0:
-            for i in range(len(self.update_status)):
-                text += f"{self.update_status[i]}\n"
+        if len(self.update_list) > 0:
+            text += "下記のサイトは更新がありました\n"
+            for update_text in self.update_list:
+                if len(text) + len(update_text) > max_length:
+                    # 現在のメッセージを送信して新しいメッセージを開始
+                    self.send_message(text)
+                    text = ""  # テキストをリセット
+
+                text += update_text + "\n"
+
+            # 残りのテキストを送信
+            if text:
+                self.send_message(text)
         else:
             text += "更新なし\n"
+            self.send_message(text)
 
-        # テキストを送信
-        print(f"[INFO] Slack Send: {text}")
-        # response = self.webhook.send(
-        #     text="fallback",
-        #     blocks=[
-        #         {
-        #             "type": "section",
-        #             "text": {
-        #                 "type": "mrkdwn",
-        #                 "text": text
-        #             }
-        #         }
-        #     ]
-        # )
+    def send_message(self, text):
+        """Slackにメッセージを送信する"""
+
+        try:
+            print(f"[INFO] Slack Send {'-'*30}")
+            print(f"[INFO] {text}")
+            response = self.webhook.send(
+                text="fallback",
+                blocks=[
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": text
+                        }
+                    }
+                ]
+            )
+            
+            # if response.status_code != 200:
+            #     raise Exception("slackに送信することが失敗しました")
+        except Exception as e:
+            print(f"[ERROR] {e}")
 
 
 def main():
@@ -125,34 +146,7 @@ def init(i, city, town):
     print(f"[INFO][{i}] INIT")
 
     # create folder in S3
-    # bucket.put_object(Key=f"{city}/{town}/")
     create_folder_on_s3(f"{city}/{town}/")
-
-# def get_txt(city, town, filename):
-#     """
-#     テキストを取得する
-#     :param city: 市区町村
-#     :param town: 市区町村
-#     :param filename: ファイル名(yyyyMMDDHH)
-#     """
-#     f = open(f"{OUTPUT_PATH}/{city}/{town}/{filename}.txt",
-#              mode='r', encoding='utf-8')
-#     data = f.read()
-
-#     return data
-
-
-# def save_txt(city, town, text, filename):
-#     """
-#     テキストを保存する
-#     :param city: 市区町村
-#     :param town: 市区町村
-#     :param text: テキスト
-#     :param filename: ファイル名(yyyyMMDDHH)
-#     """
-#     with open(f"{OUTPUT_PATH}/{city}/{town}/{filename}.txt", mode='w', encoding='utf-8') as f:
-#         f.write(text)
-
 
 def extract_html_diff(old_html, new_html):
     """
@@ -223,10 +217,15 @@ def check_update(i, city, town, text, now_str):
 
             # Compare with current data
             check_result = last_data == text
-            diff = extract_html_diff(last_data, text)
-            print(f"[INFO][{i}] Check Result : {check_result}")
+            
             if not check_result:
-                summary = gpt_summarize(diff)
+                try:
+                    diff = extract_html_diff(last_data, text)
+                    print(f"[INFO][{i}] Diff : {diff}")
+                    summary = gpt_summarize(diff)
+                except Exception as err:
+                    print(f"[ERROR][{i}] {err}")
+                    summary = "要約失敗"
 
             # Update the comparison result in the dataframe
             df.at[i, now_str] = check_result
@@ -291,9 +290,9 @@ def gpt_summarize(text):
     response = openai.ChatCompletion.create(
         model="gpt-3.5-turbo",
         messages=[
-            {"role": "system", "content": "あなたは優秀な新聞記者です。"},
+            {"role": "system", "content": "あなたはジャーナリズムのスペシャリストです。"},
             {"role": "assistant", "content": f"{text}"},
-            {"role": "user", "content": "この内容を50字以内で日本語で要約してください。"}],
+            {"role": "user", "content": "この内容を日本語で要約してください。#ルール 1.要約後の文字数は50文字以内に収めること 2.文章の主要なポイントを見逃さないよう注意すること 3.内容が分からなければ「内容が分からない」で回答してください。 #補足 +:追加した情報。-:削除した情報"}],
         max_tokens=150
     )
     
@@ -316,10 +315,6 @@ def lambda_handler(event, context):
         # Slack init
         info_news_slack = Info_news_slack()
 
-        # S3 init
-        # s3 = boto3.resource('s3')
-        # bucket = s3.Bucket(S3_BUCKETNAME)
-
         # Listを取得する
         datalist = get_list()
         print("[INFO] ALL URL: {0}".format(len(datalist)))
@@ -340,7 +335,6 @@ def lambda_handler(event, context):
                 print(f"[INFO][{i}] URL : {get_url}")
 
                 # ブラウザのHTMLを取得
-                # html = requests.get(get_url)
                 html = session.get(get_url)
 
                 # HTMLをBeautifulSoupで扱う
@@ -357,6 +351,7 @@ def lambda_handler(event, context):
                 update_status, summary = check_update(
                     i, city_name, town_name, decoded_soup, now_str)
                 if update_status:
+                    # print(f"[INFO] {summary}")
                     info_news_slack.update_status(
                         f"[{i+1}] {city_name} {town_name} {get_url}\n```{summary}```")
 
